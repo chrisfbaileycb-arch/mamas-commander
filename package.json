@@ -1,0 +1,20 @@
+{
+  "name": "mamas-agent",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=apps/docs",
+    "build": "npm run build --workspace=apps/docs",
+    "start": "npm run start --workspace=apps/docs",
+    "lint": "npm run lint --workspace=apps/docs"
+  },
+  "overrides": {
+    "mdast-util-to-markdown": "2.1.2"
+  },
+  "dependencies": {
+    "@google/genai": "^2.30.0"
+  }
+}
