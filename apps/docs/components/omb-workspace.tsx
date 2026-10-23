@@ -1579,6 +1579,37 @@ export function OmbWorkspace() {
                 </div>
               )}
 
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-zinc-900/80 p-3">
+                <span className="text-xs font-medium text-zinc-300">
+                  Quick Multi-Portion Actions:
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={repoSplitBusy}
+                    onClick={async () => {
+                      setRepoSplitBusy(true);
+                      try {
+                        const res = await fetch('/api/omb/repo-parts', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ action: 'restore_all_portions' }),
+                        });
+                        const data = (await res.json()) as { message?: string };
+                        setRepoSplitMsg(
+                          data.message || 'Restored all remaining portions into workspace!'
+                        );
+                      } finally {
+                        setRepoSplitBusy(false);
+                      }
+                    }}
+                    className="rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-zinc-950 hover:bg-emerald-400 disabled:opacity-50"
+                  >
+                    Restore All Portions (1–7)
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {[
                   {
