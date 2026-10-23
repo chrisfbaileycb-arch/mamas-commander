@@ -8,8 +8,8 @@ import type {
   ToolCallItem,
 } from '@/lib/omb-data';
 
-function getAiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
+function getAiClient(customApiKey?: string): GoogleGenAI | null {
+  const apiKey = customApiKey?.trim() || process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return null;
   }
@@ -36,9 +36,11 @@ function getEffectiveLevel(own: ApprovalMode, inherited?: ApprovalMode): { level
   return { level: own, source: 'own' };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const headerKey = request.headers.get('x-gemini-api-key')?.trim();
   return NextResponse.json({
-    apiConnected: Boolean(process.env.GEMINI_API_KEY),
+    apiConnected: Boolean(headerKey || process.env.GEMINI_API_KEY),
+    keySource: headerKey ? 'frontend_key' : process.env.GEMINI_API_KEY ? 'platform_env' : 'fallback_simulation',
     defaultModel: 'gemini-3-flash-preview',
     models: [
       'gemini-3-flash-preview',
@@ -50,6 +52,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const headerKey = request.headers.get('x-gemini-api-key')?.trim();
     const payload = (await request.json()) as {
       threadId: string;
       message?: string;
@@ -57,6 +60,7 @@ export async function POST(request: Request) {
       routineId?: string;
       webhookId?: string;
       webhookPayload?: string;
+      frontendApiKey?: string;
       approvalDecision?: {
         messageId: string;
         decision: 'approved_once' | 'approved_session' | 'approved_always' | 'denied';
@@ -212,7 +216,7 @@ export async function POST(request: Request) {
     let requiresApprovalGate = false;
     let noticedMemoryFact = '';
 
-    const ai = getAiClient();
+    const ai = getAiClient(payload.frontendApiKey || headerKey);
     if (payload.directLocalReply?.content) {
       replyText = payload.directLocalReply.content;
       proposedToolName = 'localhost_http_bridge';

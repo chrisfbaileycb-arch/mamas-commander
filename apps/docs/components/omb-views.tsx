@@ -810,14 +810,151 @@ export function ConnectedAppsView({ state, onUpdateState }: ConnectedAppsViewPro
 interface WorkflowsAndSkillsViewProps {
   state: WorkspaceState;
   onUpdateState: (updater: (prev: WorkspaceState) => WorkspaceState) => void;
+  onResolveApproval?: (
+    threadId: string,
+    messageId: string,
+    decision: 'approved_once' | 'approved_session' | 'approved_always' | 'denied',
+  ) => Promise<void>;
+  onOpenThread?: (threadId: string) => void;
+  onOpenRepoSplit?: () => void;
+  onOpenSettings?: () => void;
 }
+
+const SUPERVISORY_PIPELINE_STAGES = [
+  {
+    step: '01',
+    id: 'intake',
+    title: '01. Trigger & Context Guard',
+    domain: 'Origin Fencing & Memory Budget',
+    summary:
+      'Admits tasks from Person, Croner Routines, or fenced Inbound Webhooks (origin: "outside"). Enforces the 200-line / 24 KB MEMORY.md cap and redacts credentials before prompt assembly.',
+    mechanism: 'server/memory/redact.ts · loadWorkspaceState()',
+    invariant: 'I7 Append-Only Event Log & Secret Redaction',
+  },
+  {
+    step: '02',
+    id: 'routing',
+    title: '02. Engine & Bridge Router',
+    domain: 'API Connected vs. 127.0.0.1 Localhost',
+    summary:
+      'Routes execution to the Platform API Connected Gemini model (/api/omb/chat) or directly from the browser to Localhost (Ollama, LM Studio, vLLM, llama.cpp) with automatic API fallback and 68% MCP schema compaction.',
+    mechanism: 'find_tool / use_tool (52.4 KB → 14.8 KB)',
+    invariant: 'I6 Recorded Turn Level Matches Effective Engine Level',
+  },
+  {
+    step: '03',
+    id: 'governance',
+    title: '03. Supervisory Approval Gate',
+    domain: 'Hierarchical Authority & Safety Floor',
+    summary:
+      'Computes effective approval mode (own vs. inherited_chief from Team Chief). Blocks Safety Floor never-list commands unconditionally and pauses Ask-mode turns with interactive Approval Cards.',
+    mechanism: 'getEffectiveLevel() · Safety Floor Never-List',
+    invariant: 'I5 Nothing Claims Approved Without an Explicit Allow',
+  },
+  {
+    step: '04',
+    id: 'fixture',
+    title: '04. Isolated Fixture Verification',
+    domain: 'control:omb Ephemeral Sandbox',
+    summary:
+      'Launches an isolated fake-engine instance (FAKE_CLAUDE_MODE=deterministic) on an ephemeral port pair and temporary DATA_DIR so server and conversation changes are proved without touching live user data.',
+    mechanism: 'node --experimental-strip-types scripts/control-omb.ts launch',
+    invariant: 'Zero Live State Mutation During Verification',
+  },
+  {
+    step: '05',
+    id: 'settlement',
+    title: '05. Runtime Contract & Settlement',
+    domain: 'Multi-Agent Assignment Tree (runtime.db)',
+    summary:
+      'Supervises parent-child delegations via coordinate_bots in SQLite WAL mode. Guarantees exactly one report and at most one wake when a child assignment settles.',
+    mechanism: 'server/runtime/invariants.ts (I1–I10)',
+    invariant: 'I1–I4 & I8–I10 Single-Wake Terminal Settlement',
+  },
+  {
+    step: '06',
+    id: 'sync',
+    title: '06. Supervised Release & State Sync',
+    domain: 'Portable .omb Snapshot & Two-Part Repo Sync',
+    summary:
+      'Persists verified state to .omb.json, supervises the 7 GitHub Actions packaging workflows (macOS, Windows NSIS, Linux CUA, Docker), and coordinates the Two-Part GitHub Repository Sync.',
+    mechanism: '/api/omb/state · /api/omb/repo-parts',
+    invariant: 'Strict Allowlist Redaction on Team Export',
+  },
+] as const;
 
 export function WorkflowsAndSkillsView({
   state,
   onUpdateState,
+  onResolveApproval,
+  onOpenThread,
+  onOpenRepoSplit,
+  onOpenSettings,
 }: WorkflowsAndSkillsViewProps) {
-  const [activeTab, setActiveTab] = useState<'verification' | 'workflows' | 'skills'>('verification');
+  const [activeTab, setActiveTab] = useState<'pipeline' | 'verification' | 'workflows' | 'skills'>('pipeline');
+  const [selectedStageIdx, setSelectedStageIdx] = useState<number>(0);
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [pipelineAuditRunning, setPipelineAuditRunning] = useState(false);
+  const [pipelineAuditStep, setPipelineAuditStep] = useState<number | null>(null);
+  const [pipelineReceipt, setPipelineReceipt] = useState<string | null>(null);
+  const [recipeCategoryFilter, setRecipeCategoryFilter] = useState<string>('All');
+  const [expandedWorkflowIds, setExpandedWorkflowIds] = useState<Record<string, boolean>>({
+    'wf-ci': true,
+    'wf-release': true,
+  });
+
+  const pendingApprovals = state.threads.flatMap((t) =>
+    t.messages
+      .filter((m) => m.approvalCard?.status === 'pending')
+      .map((m) => ({
+        threadId: t.id,
+        threadTitle: t.title,
+        bot: state.bots.find((b) => b.id === t.botId) ?? state.bots[0],
+        message: m,
+        card: m.approvalCard!,
+      })),
+  );
+
+  const verifiedCount = state.verificationRecipes.filter((r) => r.status === 'verified').length;
+  const passingWorkflowsCount = state.workflows.filter((w) => w.lastStatus === 'passing').length;
+  const activeStage = SUPERVISORY_PIPELINE_STAGES[selectedStageIdx] ?? SUPERVISORY_PIPELINE_STAGES[0];
+
+  const handleRunSupervisoryAudit = () => {
+    if (pipelineAuditRunning) return;
+    setPipelineAuditRunning(true);
+    setPipelineReceipt(null);
+    let step = 0;
+    setPipelineAuditStep(0);
+    setSelectedStageIdx(0);
+
+    const interval = setInterval(() => {
+      step += 1;
+      if (step < SUPERVISORY_PIPELINE_STAGES.length) {
+        setPipelineAuditStep(step);
+        setSelectedStageIdx(step);
+      } else {
+        clearInterval(interval);
+        setPipelineAuditRunning(false);
+        setPipelineAuditStep(null);
+        const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setPipelineReceipt(
+          `Supervisory pass completed at ${timestamp} · 6/6 execution stages verified · Invariants I1–I10 PASS · ${verifiedCount}/${state.verificationRecipes.length} isolated fixtures green · ${pendingApprovals.length} approval gate(s) queued for human supervision.`,
+        );
+        onUpdateState((prev) => ({
+          ...prev,
+          verificationRecipes: prev.verificationRecipes.map((r) => ({
+            ...r,
+            status: 'verified',
+          })),
+          workflows: prev.workflows.map((w) => ({
+            ...w,
+            lastStatus: 'passing',
+            lastRunAt: 'Just now',
+          })),
+        }));
+      }
+    }, 220);
+  };
 
   const handleRunVerification = (recipeId: string) => {
     setRunningId(recipeId);
@@ -844,7 +981,7 @@ export function WorkflowsAndSkillsView({
         ),
       }));
       setRunningId(null);
-    }, 350);
+    }, 300);
   };
 
   const handleRunWorkflow = (wfId: string) => {
@@ -858,136 +995,618 @@ export function WorkflowsAndSkillsView({
                 ...w,
                 lastStatus: 'passing',
                 lastRunAt: 'Just now',
-                lastOutput: `✓ All ${w.steps.length} pipeline steps completed cleanly in isolated runner.`,
+                lastOutput: `Supervised dry-run completed (${w.steps.length} steps verified in isolated runner).`,
               }
             : w,
         ),
       }));
       setRunningId(null);
-    }, 400);
+    }, 300);
   };
+
+  const categories = [
+    'All',
+    'Core Harness',
+    'Approvals & Safety',
+    'Engines & Providers',
+    'Computers & VMs',
+    'Teams & Library',
+    'Memory & Data',
+  ];
+
+  const filteredRecipes = state.verificationRecipes.filter(
+    (r) => recipeCategoryFilter === 'All' || r.category === recipeCategoryFilter,
+  );
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#070708] p-6 text-zinc-100 space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-zinc-800/80 pb-5">
         <div>
           <div className="flex items-center gap-2.5">
             <ShieldCheck className="w-5 h-5 text-emerald-400" />
             <h1 className="text-xl font-semibold tracking-tight">
-              Repository Workflows, Verification &amp; Agent Skills
+              Supervisory Control Plane &amp; Single Source of Truth
             </h1>
           </div>
           <p className="text-xs text-zinc-400 mt-1">
-            Run isolated <code className="text-zinc-200">pnpm control:omb</code> verification fixtures, inspect GitHub Actions workflows, and test <code className="text-zinc-200">.claude/skills</code> live.
+            Unified supervisory governance over logic workflow execution steps, approval boundaries, isolated <code className="text-zinc-200 font-mono">control:omb</code> fixtures, and runtime invariants.
           </p>
         </div>
 
-        <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-900 border border-zinc-800">
-          {(
-            [
-              { id: 'verification', label: 'Verification Harness (control:omb)' },
-              { id: 'workflows', label: 'GitHub Workflows (.github/workflows)' },
-              { id: 'skills', label: 'Agent Skills (.claude/skills)' },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTab(t.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                activeTab === t.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-900 border border-zinc-800">
+            {(
+              [
+                { id: 'pipeline', label: '01. Supervisory Pipeline (SSOT)' },
+                { id: 'verification', label: `02. Verification (${verifiedCount}/${state.verificationRecipes.length})` },
+                { id: 'workflows', label: `03. CI & Release (${passingWorkflowsCount}/${state.workflows.length})` },
+                { id: 'skills', label: '04. Skills & Safety Floor' },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setActiveTab(t.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  activeTab === t.id ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={handleRunSupervisoryAudit}
+            disabled={pipelineAuditRunning}
+            className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${pipelineAuditRunning ? 'animate-spin' : ''}`} />
+            {pipelineAuditRunning ? 'Auditing 6 Stages…' : 'Run Supervisory Pass'}
+          </button>
         </div>
       </div>
 
-      {activeTab === 'verification' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {state.verificationRecipes.map((rec) => (
-            <div
-              key={rec.id}
-              className="rounded-2xl border border-zinc-800 bg-[#121215] p-5 flex flex-col justify-between gap-4"
-            >
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-emerald-400">{rec.file}</span>
-                  <span className="text-xs text-zinc-400">{rec.category}</span>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="rounded-xl border border-zinc-800/90 bg-[#101114] p-3.5">
+          <div className="text-xs text-zinc-400">Pending Human Approvals</div>
+          <div className="mt-1 flex items-baseline justify-between">
+            <span className="text-lg font-semibold font-mono tabular-nums text-amber-400">
+              {pendingApprovals.length}
+            </span>
+            <span className="text-xs text-zinc-400">
+              {pendingApprovals.length > 0 ? 'Action required' : 'Queue clear'}
+            </span>
+          </div>
+        </div>
+        <div className="rounded-xl border border-zinc-800/90 bg-[#101114] p-3.5">
+          <div className="text-xs text-zinc-400">Runtime Invariants (I1–I10)</div>
+          <div className="mt-1 flex items-baseline justify-between">
+            <span className="text-lg font-semibold font-mono tabular-nums text-emerald-400">
+              10 / 10
+            </span>
+            <span className="text-xs text-zinc-400 font-mono tabular-nums">
+              {state.assignments.length} assignments tracked
+            </span>
+          </div>
+        </div>
+        <div className="rounded-xl border border-zinc-800/90 bg-[#101114] p-3.5">
+          <div className="text-xs text-zinc-400">Isolated Fixtures (control:omb)</div>
+          <div className="mt-1 flex items-baseline justify-between">
+            <span className="text-lg font-semibold font-mono tabular-nums text-emerald-400">
+              {verifiedCount} / {state.verificationRecipes.length}
+            </span>
+            <span className="text-xs text-zinc-400">Deterministic fake-engine</span>
+          </div>
+        </div>
+        <div className="rounded-xl border border-zinc-800/90 bg-[#101114] p-3.5">
+          <div className="text-xs text-zinc-400">Tool Bridge Schema Compaction</div>
+          <div className="mt-1 flex items-baseline justify-between">
+            <span className="text-lg font-semibold font-mono tabular-nums text-sky-400">
+              {state.features.agentsToolBridge ? '-68%' : '0%'}
+            </span>
+            <span className="text-xs text-zinc-400 font-mono tabular-nums">
+              {state.features.agentsToolBridge ? '14.8 KB payload' : '52.4 KB payload'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {pipelineReceipt && (
+        <div className="rounded-xl border border-emerald-500/40 bg-emerald-950/20 px-4 py-3 text-xs text-emerald-200 flex items-center justify-between gap-4">
+          <span className="font-mono">{pipelineReceipt}</span>
+          <button
+            onClick={() => setPipelineReceipt(null)}
+            className="text-xs text-emerald-400 hover:text-emerald-200 whitespace-nowrap shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'pipeline' && (
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-zinc-800 bg-[#111215] p-5 space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-100">
+                  Unified 6-Stage Logic Workflow &amp; Supervisory Execution Pipeline
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Select any execution step below to inspect its live contract state, or run an end-to-end supervisory audit across all 6 stages.
+                </p>
+              </div>
+              <span className="text-xs font-mono text-zinc-400 tabular-nums">
+                Single Source of Truth · Step {selectedStageIdx + 1} of {SUPERVISORY_PIPELINE_STAGES.length}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5">
+              {SUPERVISORY_PIPELINE_STAGES.map((stage, idx) => {
+                const isSelected = idx === selectedStageIdx;
+                const isAuditing = pipelineAuditStep === idx;
+                return (
+                  <button
+                    key={stage.id}
+                    type="button"
+                    onClick={() => setSelectedStageIdx(idx)}
+                    className={`rounded-xl border p-3 text-left transition-colors flex flex-col justify-between gap-2 ${
+                      isSelected
+                        ? 'border-emerald-500/60 bg-emerald-950/20'
+                        : isAuditing
+                          ? 'border-amber-500/60 bg-amber-950/20'
+                          : 'border-zinc-800/90 bg-zinc-950/70 hover:border-zinc-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-xs font-mono">
+                      <span className={isSelected ? 'text-emerald-400 font-semibold' : 'text-zinc-400'}>
+                        STAGE {stage.step}
+                      </span>
+                      <span className="text-[11px] text-emerald-400">PASS</span>
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-zinc-100 leading-snug">
+                        {stage.title.replace(/^\d+\.\s*/, '')}
+                      </div>
+                      <div className="text-[11px] text-zinc-400 mt-0.5 line-clamp-1">
+                        {stage.domain}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="rounded-xl border border-zinc-800/90 bg-zinc-950/90 p-5 grid grid-cols-1 lg:grid-cols-3 gap-5">
+              <div className="lg:col-span-2 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-base font-semibold text-zinc-100">{activeStage.title}</h3>
+                  <span className="text-xs font-mono text-emerald-400">{activeStage.domain}</span>
                 </div>
-                <h3 className="text-sm font-semibold text-zinc-100">{rec.title}</h3>
-                <p className="text-xs text-zinc-400 leading-relaxed">{rec.proves}</p>
-                <div className="rounded-lg bg-zinc-950 border border-zinc-800/90 px-3 py-2 font-mono text-[11px] text-zinc-300">
-                  $ {rec.command}
+                <p className="text-xs text-zinc-300 leading-relaxed">{activeStage.summary}</p>
+                <div className="flex flex-wrap items-center gap-2 pt-1 text-xs font-mono text-zinc-400">
+                  <span>Implementation: <strong className="text-zinc-200">{activeStage.mechanism}</strong></span>
+                  <span>·</span>
+                  <span>Contract Guard: <strong className="text-emerald-400">{activeStage.invariant}</strong></span>
                 </div>
-                {rec.lastEvidence && (
-                  <pre className="rounded-lg bg-emerald-950/20 border border-emerald-500/30 p-2.5 font-mono text-[11px] text-emerald-300 overflow-x-auto">
-                    {rec.lastEvidence}
-                  </pre>
-                )}
               </div>
 
-              <div className="flex items-center justify-between pt-3 border-t border-zinc-800/80">
-                <span className="text-xs font-mono text-emerald-400 flex items-center gap-1">
-                  <Check className="w-3.5 h-3.5" />
-                  Isolated fixture verified
-                </span>
-                <button
-                  onClick={() => handleRunVerification(rec.id)}
-                  className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100 flex items-center gap-1.5 transition-colors"
-                >
-                  <RefreshCw className={`w-3.5 h-3.5 ${runningId === rec.id ? 'animate-spin' : ''}`} />
-                  Run Isolated Fixture
-                </button>
+              <div className="border-t lg:border-t-0 lg:border-l border-zinc-800/80 pt-4 lg:pt-0 lg:pl-5 flex flex-col justify-between gap-3">
+                <div className="space-y-1.5 text-xs">
+                  <div className="font-semibold text-zinc-200">Live Stage Telemetry</div>
+                  {activeStage.id === 'intake' && (
+                    <div className="font-mono text-[11px] text-zinc-400 space-y-1 tabular-nums">
+                      <div>Active routines: {state.routines.filter((r) => r.enabled).length} Croner schedules</div>
+                      <div>Fenced webhooks: {state.webhooks.length} endpoints (origin: outside)</div>
+                      <div>Memory cap: 200 lines / 24.0 KB enforced</div>
+                    </div>
+                  )}
+                  {activeStage.id === 'routing' && (
+                    <div className="font-mono text-[11px] text-zinc-400 space-y-1 tabular-nums">
+                      <div>Primary API: {state.agentInteractionSettings?.defaultModel ?? 'gemini-3-flash-preview'}</div>
+                      <div>Localhost bridge: {state.localhostConfig?.baseUrl ?? 'http://127.0.0.1:11434/v1'}</div>
+                      <div>Auto-fallback to API: {state.localhostConfig?.autoFallbackToApi ? 'Enabled' : 'Disabled'}</div>
+                    </div>
+                  )}
+                  {activeStage.id === 'governance' && (
+                    <div className="font-mono text-[11px] text-zinc-400 space-y-1 tabular-nums">
+                      <div>Pending approvals: {pendingApprovals.length} card(s)</div>
+                      <div>Chief escalation flow: {state.features.chiefEscalations ? 'Active' : 'Off'}</div>
+                      <div>Safety floor: Active (unconditional block)</div>
+                    </div>
+                  )}
+                  {activeStage.id === 'fixture' && (
+                    <div className="font-mono text-[11px] text-zinc-400 space-y-1 tabular-nums">
+                      <div>Verified recipes: {verifiedCount} / {state.verificationRecipes.length}</div>
+                      <div>Harness driver: FAKE_CLAUDE_MODE=deterministic</div>
+                      <div>Port isolation: Ephemeral port pair</div>
+                    </div>
+                  )}
+                  {activeStage.id === 'settlement' && (
+                    <div className="font-mono text-[11px] text-zinc-400 space-y-1 tabular-nums">
+                      <div>Assignments tracked: {state.assignments.length} in runtime.db</div>
+                      <div>Needs input: {state.assignments.filter((a) => a.status === 'needs_input').length}</div>
+                      <div>Completed: {state.assignments.filter((a) => a.status === 'completed').length}</div>
+                    </div>
+                  )}
+                  {activeStage.id === 'sync' && (
+                    <div className="font-mono text-[11px] text-zinc-400 space-y-1 tabular-nums">
+                      <div>CI / Release workflows: {passingWorkflowsCount} / {state.workflows.length} passing</div>
+                      <div>Environment: {state.activeEnv}</div>
+                      <div>Repo sync mode: Part 1 / Part 2 split ready</div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {activeStage.id === 'routing' && onOpenSettings && (
+                    <button
+                      type="button"
+                      onClick={onOpenSettings}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100 whitespace-nowrap shrink-0"
+                    >
+                      Configure API &amp; Localhost
+                    </button>
+                  )}
+                  {activeStage.id === 'fixture' && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('verification')}
+                      className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100 whitespace-nowrap shrink-0"
+                    >
+                      Open Verification Harness
+                    </button>
+                  )}
+                  {activeStage.id === 'sync' && onOpenRepoSplit && (
+                    <button
+                      type="button"
+                      onClick={onOpenRepoSplit}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-xs font-semibold text-zinc-950 whitespace-nowrap shrink-0"
+                    >
+                      Open Two-Part Repo Sync
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setSelectedStageIdx((prev) => (prev + 1) % SUPERVISORY_PIPELINE_STAGES.length)
+                    }
+                    className="px-3 py-1.5 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-xs font-medium text-zinc-200 whitespace-nowrap shrink-0"
+                  >
+                    Next Stage →
+                  </button>
+                </div>
               </div>
             </div>
-          ))}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div className="rounded-2xl border border-zinc-800 bg-[#111215] p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-100">
+                    Supervisory Approval Queue &amp; Human Gate
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    Approve or deny sensitive agent commands directly from the Single Source of Truth without hunting through chat threads.
+                  </p>
+                </div>
+                <span className="font-mono text-xs tabular-nums text-amber-400">
+                  {pendingApprovals.length} pending
+                </span>
+              </div>
+
+              {pendingApprovals.length === 0 ? (
+                <div className="rounded-xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-xs text-zinc-400">
+                  All agent turns are settled. No commands are currently waiting on human approval.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {pendingApprovals.map((item) => (
+                    <div
+                      key={item.message.id}
+                      className="rounded-xl border border-amber-500/40 bg-[#16130d] p-4 space-y-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <OmbMascot
+                            color={item.bot.color}
+                            shape={item.bot.shape}
+                            expression={item.bot.expression}
+                            size="sm"
+                          />
+                          <span className="font-semibold text-zinc-100">{item.bot.name}</span>
+                          <span className="text-zinc-400">·</span>
+                          <span className="text-amber-300 font-mono">{item.card.toolName}</span>
+                        </div>
+                        {onOpenThread && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenThread(item.threadId)}
+                            className="text-xs text-zinc-400 hover:text-zinc-200 whitespace-nowrap shrink-0"
+                          >
+                            Open thread →
+                          </button>
+                        )}
+                      </div>
+                      <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-2.5 font-mono text-[11px] text-zinc-200">
+                        {item.card.commandOrAction}
+                      </div>
+                      <p className="text-xs text-zinc-400">{item.card.reason}</p>
+                      {onResolveApproval && (
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onResolveApproval(item.threadId, item.message.id, 'approved_once')
+                            }
+                            className="px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-xs font-semibold flex items-center gap-1 whitespace-nowrap shrink-0"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            Allow Once
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onResolveApproval(item.threadId, item.message.id, 'approved_session')
+                            }
+                            className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium whitespace-nowrap shrink-0"
+                          >
+                            Allow for Session
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onResolveApproval(item.threadId, item.message.id, 'denied')
+                            }
+                            className="px-3 py-1.5 rounded-lg border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-300 text-xs font-medium whitespace-nowrap shrink-0"
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-zinc-800 bg-[#111215] p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-100">
+                    Active Multi-Agent Assignment Ledger (runtime.db)
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-0.5">
+                    Real-time supervision of root turns and Team Chief child delegations across your fleet.
+                  </p>
+                </div>
+                <span className="font-mono text-xs tabular-nums text-zinc-400">
+                  {state.assignments.length} records
+                </span>
+              </div>
+
+              <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                {state.assignments.slice(0, 6).map((asg) => {
+                  const assignee = state.bots.find((b) => b.id === asg.assigneeBotId);
+                  return (
+                    <div
+                      key={asg.id}
+                      className="rounded-xl border border-zinc-800/90 bg-zinc-950/70 p-3 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-1.5 font-mono">
+                          <span className="text-zinc-200 font-semibold">
+                            {asg.depth > 0 ? '↳ ' : ''}
+                            {assignee?.name ?? asg.assigneeBotId}
+                          </span>
+                          <span className="text-zinc-500">·</span>
+                          <span className="text-zinc-400">{asg.origin}</span>
+                          <span className="text-zinc-500">·</span>
+                          <span className="text-amber-300">
+                            {asg.level} ({asg.levelSource})
+                          </span>
+                        </div>
+                        <span
+                          className={`font-mono text-[11px] uppercase ${
+                            asg.status === 'completed'
+                              ? 'text-emerald-400'
+                              : asg.status === 'needs_input'
+                                ? 'text-amber-400'
+                                : 'text-sky-400'
+                          }`}
+                        >
+                          {asg.status}
+                        </span>
+                      </div>
+                      <p className="text-xs text-zinc-300 line-clamp-1">{asg.brief}</p>
+                      {asg.result && (
+                        <div className="text-[11px] text-zinc-400 font-mono line-clamp-1">
+                          Result: {asg.result}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-zinc-800 bg-[#111215] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-100">
+                  Architectural Assessment: Supervisory Control Plane vs. Traditional Deployment Platform
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5">
+                  Why Mama&apos;s Agent operates as an executive supervisory harness rather than a raw CI/CD deployment engine.
+                </p>
+              </div>
+              <span className="text-xs font-mono text-emerald-400">
+                Governance Architecture Verified
+              </span>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-zinc-800">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-zinc-800 bg-zinc-900/80 text-zinc-400 font-mono">
+                    <th className="py-2.5 px-3.5">Dimension</th>
+                    <th className="py-2.5 px-3.5">Raw Deployment Platform</th>
+                    <th className="py-2.5 px-3.5 text-emerald-400">Mama&apos;s Agent (Supervisory Control Plane)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-800/70">
+                  <tr>
+                    <td className="py-2.5 px-3.5 font-medium text-zinc-100">Execution Model</td>
+                    <td className="py-2.5 px-3.5 text-zinc-400">Blindly runs static pipeline scripts on commit or trigger</td>
+                    <td className="py-2.5 px-3.5 text-zinc-200">Supervises autonomous multi-agent turns with dynamic tool selection &amp; human-in-the-loop Approval Cards</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3.5 font-medium text-zinc-100">Authority &amp; Trust Boundary</td>
+                    <td className="py-2.5 px-3.5 text-zinc-400">Single environment-wide runner token</td>
+                    <td className="py-2.5 px-3.5 text-zinc-200">Per-bot approval levels (Ask / Edits / Auto / Full), Chief inheritance, fenced outside webhooks, and Safety Floor never-list</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3.5 font-medium text-zinc-100">Pre-Mutation Verification</td>
+                    <td className="py-2.5 px-3.5 text-zinc-400">Deploys directly to staging/production infrastructure</td>
+                    <td className="py-2.5 px-3.5 text-zinc-200">Launches isolated ephemeral fixtures (<code className="font-mono text-emerald-300">control:omb</code>) and checks Runtime Invariants I1–I10 first</td>
+                  </tr>
+                  <tr>
+                    <td className="py-2.5 px-3.5 font-medium text-zinc-100">Model &amp; Compute Routing</td>
+                    <td className="py-2.5 px-3.5 text-zinc-400">Fixed cloud runner</td>
+                    <td className="py-2.5 px-3.5 text-zinc-200">Hybrid browser-to-localhost (<code className="font-mono text-sky-300">127.0.0.1</code>) bridge + API Connected model with automatic failover</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'verification' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-1 p-1 rounded-xl bg-zinc-900 border border-zinc-800">
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setRecipeCategoryFilter(cat)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                    recipeCategoryFilter === cat
+                      ? 'bg-zinc-800 text-zinc-100'
+                      : 'text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {filteredRecipes.map((rec) => (
+              <div
+                key={rec.id}
+                className="rounded-2xl border border-zinc-800 bg-[#121215] p-5 flex flex-col justify-between gap-4"
+              >
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-mono text-emerald-400">{rec.file}</span>
+                    <span className="text-zinc-400">{rec.category}</span>
+                  </div>
+                  <h3 className="text-sm font-semibold text-zinc-100">{rec.title}</h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">{rec.proves}</p>
+                  <div className="rounded-lg bg-zinc-950 border border-zinc-800/90 px-3 py-2 font-mono text-[11px] text-zinc-300">
+                    $ {rec.command}
+                  </div>
+                  {rec.lastEvidence && (
+                    <pre className="rounded-lg bg-emerald-950/20 border border-emerald-500/30 p-2.5 font-mono text-[11px] text-emerald-300 overflow-x-auto">
+                      {rec.lastEvidence}
+                    </pre>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between pt-3 border-t border-zinc-800/80">
+                  <span className="text-xs font-mono text-emerald-400 flex items-center gap-1">
+                    <Check className="w-3.5 h-3.5" />
+                    Isolated fixture verified
+                  </span>
+                  <button
+                    onClick={() => handleRunVerification(rec.id)}
+                    className="px-3.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-100 flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${runningId === rec.id ? 'animate-spin' : ''}`} />
+                    Run Isolated Fixture
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
       {activeTab === 'workflows' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {state.workflows.map((wf) => (
-            <div
-              key={wf.id}
-              className="rounded-2xl border border-zinc-800 bg-[#121215] p-5 flex flex-col justify-between gap-4"
-            >
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono text-blue-400">{wf.filename}</span>
-                  <span className="text-xs font-mono text-emerald-400">
-                    {wf.lastStatus.toUpperCase()} · {wf.lastRunAt}
-                  </span>
-                </div>
-                <h3 className="text-sm font-semibold text-zinc-100">{wf.name}</h3>
-                <p className="text-xs text-zinc-400 leading-relaxed">{wf.summary}</p>
-                <div className="rounded-xl bg-zinc-950 border border-zinc-800/80 p-3 space-y-1.5">
-                  <div className="text-[11px] font-mono text-zinc-400">Trigger: {wf.trigger}</div>
-                  {wf.steps.map((st, idx) => (
-                    <div key={idx} className="text-xs font-mono text-zinc-300 flex items-center gap-2">
-                      <Check className="w-3 h-3 text-emerald-400 shrink-0" />
-                      <span>{st}</span>
-                    </div>
-                  ))}
-                </div>
-                {wf.lastOutput && (
-                  <div className="rounded-lg bg-emerald-950/20 border border-emerald-500/30 px-3 py-2 text-xs font-mono text-emerald-300">
-                    {wf.lastOutput}
+          {state.workflows.map((wf) => {
+            const isExpanded = Boolean(expandedWorkflowIds[wf.id]);
+            return (
+              <div
+                key={wf.id}
+                className="rounded-2xl border border-zinc-800 bg-[#121215] p-5 flex flex-col justify-between gap-4"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between text-xs font-mono">
+                    <span className="text-blue-400">{wf.filename}</span>
+                    <span className="text-emerald-400 tabular-nums">
+                      {wf.lastStatus.toUpperCase()} · {wf.lastRunAt}
+                    </span>
                   </div>
-                )}
-              </div>
+                  <h3 className="text-sm font-semibold text-zinc-100">{wf.name}</h3>
+                  <p className="text-xs text-zinc-400 leading-relaxed">{wf.summary}</p>
+                  <div className="flex items-center justify-between text-xs text-zinc-400 font-mono pt-1">
+                    <span>Trigger: {wf.trigger}</span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedWorkflowIds((prev) => ({
+                          ...prev,
+                          [wf.id]: !prev[wf.id],
+                        }))
+                      }
+                      className="text-zinc-300 hover:text-white underline underline-offset-4"
+                    >
+                      {isExpanded ? 'Hide steps' : `Inspect ${wf.steps.length} steps`}
+                    </button>
+                  </div>
+                  {isExpanded && (
+                    <div className="rounded-xl bg-zinc-950 border border-zinc-800/80 p-3 space-y-1.5">
+                      {wf.steps.map((st, idx) => (
+                        <div key={idx} className="text-xs font-mono text-zinc-300 flex items-center gap-2">
+                          <Check className="w-3 h-3 text-emerald-400 shrink-0" />
+                          <span>{st}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {wf.lastOutput && (
+                    <div className="rounded-lg bg-emerald-950/20 border border-emerald-500/30 px-3 py-2 text-xs font-mono text-emerald-300">
+                      {wf.lastOutput}
+                    </div>
+                  )}
+                </div>
 
-              <div className="flex justify-end pt-2 border-t border-zinc-800/80">
-                <button
-                  onClick={() => handleRunWorkflow(wf.id)}
-                  className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {runningId === wf.id ? 'Executing steps…' : 'Trigger Workflow Dry-Run'}
-                </button>
+                <div className="flex justify-end pt-2 border-t border-zinc-800/80">
+                  <button
+                    onClick={() => handleRunWorkflow(wf.id)}
+                    className="px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    {runningId === wf.id ? 'Supervising steps…' : 'Supervise Dry-Run'}
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

@@ -66,7 +66,7 @@ export function OmbWorkspace() {
   );
   const [loaded, setLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState<MainTab>('chat');
-  const [rightDrawer, setRightDrawer] = useState<RightDrawer>('computer');
+  const [rightDrawer, setRightDrawer] = useState<RightDrawer>(null);
   const [promptInput, setPromptInput] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
@@ -300,16 +300,18 @@ export function OmbWorkspace() {
 
   const handleResolveApproval = async (
     messageId: string,
-    decision: 'approved_once' | 'approved_session' | 'approved_always' | 'denied'
+    decision: 'approved_once' | 'approved_session' | 'approved_always' | 'denied',
+    overrideThreadId?: string
   ) => {
-    if (!activeThread) return;
+    const targetThreadId = overrideThreadId ?? activeThread?.id;
+    if (!targetThreadId) return;
     setIsSending(true);
     try {
       const res = await fetch('/api/omb/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          threadId: activeThread.id,
+          threadId: targetThreadId,
           approvalDecision: {
             messageId,
             decision,
@@ -428,17 +430,13 @@ export function OmbWorkspace() {
             <div className="flex items-center gap-2.5">
               <OmbMascot color="#F59E0B" shape="mascot" expression={0} size="sm" />
               <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-bold tracking-tight text-zinc-100">
-                    Mama&apos;s Agent
-                  </span>
-                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-amber-300">
-                    CLOUD
-                  </span>
+                <div className="text-sm font-bold tracking-tight text-zinc-100 whitespace-nowrap">
+                  Mama&apos;s Agent
                 </div>
-                <div className="flex items-center gap-1 text-[10px] text-zinc-400">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                <div className="flex items-center gap-1 text-[10px] text-zinc-400 font-mono">
                   <span>{state.activeEnv}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-emerald-400">Supervised</span>
                 </div>
               </div>
             </div>
@@ -446,7 +444,7 @@ export function OmbWorkspace() {
               type="button"
               onClick={() => setShowCommandPalette(true)}
               title="Command Palette (Cmd+K)"
-              className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/90 px-2 py-1 text-[10px] text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+              className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900/90 px-2 py-1 text-[10px] text-zinc-400 hover:border-zinc-700 hover:text-zinc-200 whitespace-nowrap shrink-0"
             >
               <Search className="h-3 w-3" />
               <span>⌘K</span>
@@ -456,6 +454,24 @@ export function OmbWorkspace() {
           <div className="space-y-0.5 border-b border-zinc-800/80 p-2">
             <button
               type="button"
+              onClick={() => setActiveTab('workflows')}
+              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+                activeTab === 'workflows'
+                  ? 'bg-zinc-800/90 text-zinc-100'
+                  : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
+              }`}
+            >
+              <span className="flex items-center gap-2 whitespace-nowrap">
+                <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                Supervisory Hub (SSOT)
+              </span>
+              <span className="font-mono text-[10px] tabular-nums text-emerald-400">
+                6 stages
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveTab('chat')}
               className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition ${
                 activeTab === 'chat'
@@ -463,13 +479,17 @@ export function OmbWorkspace() {
                   : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2 whitespace-nowrap">
                 <MessageSquare className="h-3.5 w-3.5 text-amber-400" />
-                Chat & Task Threads
+                Chat &amp; Task Threads
               </span>
-              {pendingApprovalsCount > 0 && (
-                <span className="rounded-full bg-amber-500 px-1.5 py-0.2 text-[10px] font-bold text-zinc-950">
-                  {pendingApprovalsCount}
+              {pendingApprovalsCount > 0 ? (
+                <span className="font-mono text-[10px] font-bold tabular-nums text-amber-400">
+                  {pendingApprovalsCount} ask
+                </span>
+              ) : (
+                <span className="font-mono text-[10px] tabular-nums text-zinc-500">
+                  {state.threads.length}
                 </span>
               )}
             </button>
@@ -483,11 +503,11 @@ export function OmbWorkspace() {
                   : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2 whitespace-nowrap">
                 <CalendarClock className="h-3.5 w-3.5 text-emerald-400" />
-                Tasks & Routines
+                Tasks &amp; Routines
               </span>
-              <span className="font-mono text-[10px] text-zinc-500">
+              <span className="font-mono text-[10px] tabular-nums text-zinc-500">
                 {state.routines.filter((r) => r.enabled).length}
               </span>
             </button>
@@ -501,30 +521,12 @@ export function OmbWorkspace() {
                   : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2 whitespace-nowrap">
                 <Blocks className="h-3.5 w-3.5 text-sky-400" />
                 Connected Apps
               </span>
-              <span className="font-mono text-[10px] text-zinc-500">
+              <span className="font-mono text-[10px] tabular-nums text-zinc-500">
                 {state.composioServices.reduce((acc, a) => acc + a.accounts.length, 0)}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveTab('workflows')}
-              className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition ${
-                activeTab === 'workflows'
-                  ? 'bg-zinc-800/90 text-zinc-100'
-                  : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <ShieldCheck className="h-3.5 w-3.5 text-purple-400" />
-                Skills, Verify & CI
-              </span>
-              <span className="rounded bg-purple-500/15 px-1.5 py-0.2 font-mono text-[9px] text-purple-300">
-                13 YML
               </span>
             </button>
 
@@ -537,9 +539,9 @@ export function OmbWorkspace() {
                   : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2 whitespace-nowrap">
                 <Package className="h-3.5 w-3.5 text-pink-400" />
-                Templates & Data
+                Templates &amp; Data
               </span>
               <span className="font-mono text-[10px] text-zinc-500">.omb</span>
             </button>
@@ -689,7 +691,7 @@ export function OmbWorkspace() {
                 className="flex flex-1 items-center justify-center gap-1 rounded border border-amber-500/40 bg-amber-500/15 px-2 py-1 text-[10px] font-semibold text-amber-300 hover:bg-amber-500/25"
               >
                 <Package className="h-3 w-3" />
-                Part 1 / 2 Push
+                7-Portion Push
               </button>
               <Link
                 href="/docs"
@@ -754,10 +756,19 @@ export function OmbWorkspace() {
                 <button
                   type="button"
                   onClick={() => handleCreateTaskThread(activeBot.id)}
-                  className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
+                  className="flex items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-2.5 py-1 text-xs font-medium text-zinc-300 hover:border-zinc-700 hover:text-zinc-100 whitespace-nowrap shrink-0"
                 >
                   <Plus className="h-3.5 w-3.5 text-amber-400" />
                   New Task
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('workflows')}
+                  className="hidden lg:flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-300 hover:bg-emerald-500/20 whitespace-nowrap shrink-0"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+                  Supervisory Pipeline (SSOT)
                 </button>
               </div>
 
@@ -1035,12 +1046,12 @@ export function OmbWorkspace() {
                       <p className="mt-1 text-xs text-zinc-400">
                         {activeBot.description}
                       </p>
-                      <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-zinc-800 bg-zinc-900/90 px-3 py-1 text-[11px] text-zinc-300">
+                      <div className="mt-2.5 flex items-center justify-center gap-2 text-xs text-zinc-400 font-mono">
                         <span>Computer: <strong className="text-amber-300">{activeBot.computerMode}</strong></span>
-                        <span>·</span>
+                        <span aria-hidden="true">·</span>
                         <span>Approval: <strong className="text-emerald-300">{activeBot.approvalMode}</strong></span>
-                        <span>·</span>
-                        <span>Skills: <strong>{activeBot.skills.filter((s) => s.enabled).length} active</strong></span>
+                        <span aria-hidden="true">·</span>
+                        <span>Skills: <strong className="text-zinc-200 tabular-nums">{activeBot.skills.filter((s) => s.enabled).length} active</strong></span>
                       </div>
 
                       <div className="mt-6 grid grid-cols-1 gap-2.5 text-left sm:grid-cols-2">
@@ -1364,7 +1375,23 @@ export function OmbWorkspace() {
         )}
 
         {activeTab === 'workflows' && (
-          <WorkflowsAndSkillsView state={state} onUpdateState={persistState} />
+          <WorkflowsAndSkillsView
+            state={state}
+            onUpdateState={persistState}
+            onResolveApproval={async (threadId, messageId, decision) => {
+              await handleResolveApproval(messageId, decision, threadId);
+            }}
+            onOpenThread={(threadId) => {
+              const target = state.threads.find((t) => t.id === threadId);
+              if (target) {
+                setSelectedBotId(target.botId);
+                setSelectedThreadId(target.id);
+              }
+              setActiveTab('chat');
+            }}
+            onOpenRepoSplit={() => setShowRepoSplit(true)}
+            onOpenSettings={() => setShowSettings(true)}
+          />
         )}
 
         {activeTab === 'templates' && (
@@ -1521,7 +1548,7 @@ export function OmbWorkspace() {
           onClick={() => setShowRepoSplit(false)}
         >
           <div
-            className="w-full max-w-2xl overflow-hidden rounded-xl border border-zinc-800 bg-[#111215] text-zinc-100 shadow-2xl"
+            className="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-zinc-800 bg-[#111215] text-zinc-100 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
@@ -1529,10 +1556,10 @@ export function OmbWorkspace() {
                 <Package className="h-4 w-4 text-amber-400" />
                 <div>
                   <h2 className="text-sm font-semibold">
-                    Two-Part GitHub Repository Push Manager
+                    7-Portion GitHub Repository Push Manager
                   </h2>
                   <p className="text-[11px] text-zinc-400">
-                    Push Part 1 (~850 KB) first so GitHub accepts the initial repo, then load &amp; push Part 2 (~1.1 MB).
+                    Each portion is 93–138 files (176–444 KB compressed) and automatically purges the 120 MB Next.js cache so GitHub push succeeds.
                   </p>
                 </div>
               </div>
@@ -1545,119 +1572,162 @@ export function OmbWorkspace() {
               </button>
             </div>
 
-            <div className="space-y-4 p-6">
+            <div className="flex-1 space-y-4 overflow-y-auto p-6">
               {repoSplitMsg && (
                 <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs text-emerald-200">
                   {repoSplitMsg}
                 </div>
               )}
 
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 flex flex-col justify-between gap-3">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-amber-300">
-                        Part 1: Core Live App &amp; Workflows
-                      </span>
-                      <span className="rounded bg-amber-500/20 px-2 py-0.5 font-mono text-[10px] text-amber-300">
-                        ~850 KB
-                      </span>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {[
+                  {
+                    id: 'portion1',
+                    title: 'Portion 1: Core Supervisory App',
+                    files: '111 files · 176 KB .tar.gz',
+                    desc: 'apps/docs (Supervisory Control Plane, Gemini & Localhost bridge), .claude, skills & root metadata.',
+                    isCore: true,
+                  },
+                  {
+                    id: 'portion2',
+                    title: 'Portion 2: Shared Contracts & Scripts',
+                    files: '+128 files · 249 KB .tar.gz',
+                    desc: 'shared/ wire protocol schemas and scripts/ automation utilities.',
+                    isCore: false,
+                  },
+                  {
+                    id: 'portion3',
+                    title: 'Portion 3: Frontend Studio UI (src/)',
+                    files: '+138 files · 444 KB .tar.gz',
+                    desc: 'src/ components, public/, index.html, Vite & TypeScript build configs.',
+                    isCore: false,
+                  },
+                  {
+                    id: 'portion4',
+                    title: 'Portion 4: Server Drivers, Routes & Browser',
+                    files: '+94 files · 281 KB .tar.gz',
+                    desc: 'server/drivers, server/routes, and server/browser automation modules.',
+                    isCore: false,
+                  },
+                  {
+                    id: 'portion5',
+                    title: 'Portion 5: Server Runtime, Decider & Sentinel',
+                    files: '+111 files · 270 KB .tar.gz',
+                    desc: 'server/ core, runtime, decider, host, sentinel, data, tts & Dockerfiles.',
+                    isCore: false,
+                  },
+                  {
+                    id: 'portion6',
+                    title: 'Portion 6: Electron Desktop Shell',
+                    files: '+111 files · 289 KB .tar.gz',
+                    desc: 'electron/ main, preload, tray & electron-builder.yml.',
+                    isCore: false,
+                  },
+                  {
+                    id: 'portion7',
+                    title: 'Portion 7: Architecture Docs, CI & Evals',
+                    files: '+93 files · 357 KB .tar.gz',
+                    desc: 'docs/*.md, .github/workflows, evals/, enterprise/ & governance docs.',
+                    isCore: false,
+                  },
+                ].map((portion) => (
+                  <div
+                    key={portion.id}
+                    className={`flex flex-col justify-between gap-3 rounded-xl border p-3.5 ${
+                      portion.isCore
+                        ? 'border-amber-500/30 bg-amber-500/5'
+                        : 'border-zinc-800 bg-zinc-900/50'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span
+                          className={`text-xs font-semibold ${
+                            portion.isCore ? 'text-amber-300' : 'text-zinc-100'
+                          }`}
+                        >
+                          {portion.title}
+                        </span>
+                        <span className="shrink-0 font-mono text-[10px] tabular-nums text-zinc-400">
+                          {portion.files}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-[11px] leading-relaxed text-zinc-400">
+                        {portion.desc}
+                      </p>
                     </div>
-                    <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-300">
-                      Contains 100% of your custom Mama&apos;s Agent Cloud Workspace (<code className="text-amber-300">apps/docs</code>), live Gemini &amp; Localhost bridge, <code className="text-amber-300">.claude/skills</code>, <code className="text-amber-300">/workflows</code>, and core docs.
-                    </p>
-                  </div>
-                  <div className="space-y-2 pt-2 border-t border-amber-500/20">
-                    <button
-                      type="button"
-                      disabled={repoSplitBusy}
-                      onClick={async () => {
-                        setRepoSplitBusy(true);
-                        try {
-                          const res = await fetch('/api/omb/repo-parts', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'slim_to_part1' }),
-                          });
-                          const data = (await res.json()) as { message?: string };
-                          setRepoSplitMsg(
-                            data.message || 'Part 1 active! Click GitHub Publish now.'
-                          );
-                        } finally {
-                          setRepoSplitBusy(false);
-                        }
-                      }}
-                      className="w-full rounded-lg bg-amber-500 px-3 py-2 text-xs font-semibold text-zinc-950 hover:bg-amber-400 disabled:opacity-50"
-                    >
-                      1. Activate Part 1 in Workspace (Push First)
-                    </button>
-                    <a
-                      href="/api/omb/repo-parts?download=part1"
-                      className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      Download Part 1 (.tar.gz)
-                    </a>
-                  </div>
-                </div>
 
-                <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4 flex flex-col justify-between gap-3">
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-sky-300">
-                        Part 2: Companion, Cloudflare &amp; Electron
-                      </span>
-                      <span className="rounded bg-sky-500/20 px-2 py-0.5 font-mono text-[10px] text-sky-300">
-                        ~1.1 MB
-                      </span>
-                    </div>
-                    <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-300">
-                      Contains <code className="text-sky-300">cloudflare/</code>, <code className="text-sky-300">companion/</code>, <code className="text-sky-300">electron/</code>, <code className="text-sky-300">deploy/</code>, and design plans (with the 55 MB of raw video/GIF blobs stripped so GitHub push succeeds).
-                    </p>
-                  </div>
-                  <div className="space-y-2 pt-2 border-t border-sky-500/20">
-                    <button
-                      type="button"
-                      disabled={repoSplitBusy}
-                      onClick={async () => {
-                        setRepoSplitBusy(true);
-                        try {
-                          const res = await fetch('/api/omb/repo-parts', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ action: 'restore_part2_code' }),
-                          });
-                          const data = (await res.json()) as { message?: string };
-                          setRepoSplitMsg(
-                            data.message ||
-                              'Part 2 code restored into workspace! Click GitHub Push now.'
-                          );
-                        } finally {
-                          setRepoSplitBusy(false);
-                        }
-                      }}
-                      className="w-full rounded-lg bg-sky-500 px-3 py-2 text-xs font-semibold text-zinc-950 hover:bg-sky-400 disabled:opacity-50"
-                    >
-                      2. Load Part 2 Code into Workspace (Push Second)
-                    </button>
-                    <div className="flex gap-1.5">
+                    <div className="flex flex-wrap gap-1.5 border-t border-zinc-800/80 pt-2.5">
+                      <button
+                        type="button"
+                        disabled={repoSplitBusy}
+                        onClick={async () => {
+                          setRepoSplitBusy(true);
+                          try {
+                            const res = await fetch('/api/omb/repo-parts', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                action: 'activate_portion',
+                                portionId: portion.id,
+                              }),
+                            });
+                            const data = (await res.json()) as { message?: string };
+                            setRepoSplitMsg(
+                              data.message || `${portion.title} active in workspace!`
+                            );
+                          } finally {
+                            setRepoSplitBusy(false);
+                          }
+                        }}
+                        className={`flex-1 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50 ${
+                          portion.isCore
+                            ? 'bg-amber-500 text-zinc-950 hover:bg-amber-400'
+                            : 'bg-sky-500 text-zinc-950 hover:bg-sky-400'
+                        }`}
+                      >
+                        {portion.isCore ? 'Slim to Portion 1 Only' : 'Isolate Portion'}
+                      </button>
+
+                      {!portion.isCore && (
+                        <button
+                          type="button"
+                          disabled={repoSplitBusy}
+                          onClick={async () => {
+                            setRepoSplitBusy(true);
+                            try {
+                              const res = await fetch('/api/omb/repo-parts', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  action: 'add_portion',
+                                  portionId: portion.id,
+                                }),
+                              });
+                              const data = (await res.json()) as { message?: string };
+                              setRepoSplitMsg(
+                                data.message || `Added ${portion.title} to workspace!`
+                              );
+                            } finally {
+                              setRepoSplitBusy(false);
+                            }
+                          }}
+                          className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-[11px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                        >
+                          + Add to Workspace
+                        </button>
+                      )}
+
                       <a
-                        href="/api/omb/repo-parts?download=part2-code"
-                        className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] text-zinc-200 hover:bg-zinc-800"
+                        href={`/api/omb/repo-parts?download=${portion.id}`}
+                        className="flex items-center justify-center gap-1 rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-[11px] text-zinc-300 hover:border-zinc-700 hover:text-zinc-100"
                       >
                         <Download className="h-3 w-3" />
-                        Part 2 Code (1.1 MB)
-                      </a>
-                      <a
-                        href="/api/omb/repo-parts?download=part2-full"
-                        className="flex flex-1 items-center justify-center gap-1 rounded-lg border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-[11px] text-zinc-400 hover:bg-zinc-800"
-                      >
-                        <Download className="h-3 w-3" />
-                        Full Media (48 MB)
+                        .tar.gz
                       </a>
                     </div>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
           </div>

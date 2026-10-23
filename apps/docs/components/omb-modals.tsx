@@ -51,7 +51,7 @@ export function SettingsModal({
   const [probingLocalhost, setProbingLocalhost] = useState(false);
   const [testingApi, setTestingApi] = useState(false);
   const [apiPingMessage, setApiPingMessage] = useState<string | null>(
-    'Platform API Connected & Ready (/api/omb/chat)'
+    'API Connected & Supervised (/api/omb/chat)'
   );
 
   const localCfg = state.localhostConfig ?? {
@@ -73,12 +73,19 @@ export function SettingsModal({
     const start = performance.now();
     try {
       const res = await fetch('/api/omb/chat');
-      const data = (await res.json()) as { apiConnected?: boolean; defaultModel?: string };
+      const data = (await res.json()) as {
+        apiConnected?: boolean;
+        defaultModel?: string;
+      };
       const elapsed = Math.round(performance.now() - start);
       if (data.apiConnected) {
-        setApiPingMessage(`Verified API Connected (${data.defaultModel}) in ${elapsed}ms`);
+        setApiPingMessage(
+          `Verified API Connected (${data.defaultModel}) in ${elapsed}ms`
+        );
       } else {
-        setApiPingMessage(`API Route reachable in ${elapsed}ms (Platform environment ready)`);
+        setApiPingMessage(
+          `API Route reachable in ${elapsed}ms (Supervisory runtime ready)`
+        );
       }
     } catch {
       setApiPingMessage('Could not reach /api/omb/chat');

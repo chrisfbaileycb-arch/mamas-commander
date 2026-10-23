@@ -1,9 +1,17 @@
 import type { Metadata } from 'next';
-import { Inter } from 'next/font/google';
+import { Plus_Jakarta_Sans, JetBrains_Mono } from 'next/font/google';
 import { Provider } from '@/components/provider';
 import './global.css';
 
-const inter = Inter({ subsets: ['latin'] });
+const plusJakarta = Plus_Jakarta_Sans({
+  subsets: ['latin'],
+  variable: '--font-sans',
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  variable: '--font-mono',
+});
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://docs.openmausbot.com'),
@@ -11,10 +19,10 @@ export const metadata: Metadata = {
     default: "Mama's Agent",
     template: "%s · Mama's Agent",
   },
-  description: 'Install, configure, and extend your local-first team of AI agents.',
+  description: 'Supervisory AI agent orchestration, verification harness, and local-first team control plane.',
   openGraph: {
     title: "Mama's Agent",
-    description: 'Install, configure, and extend your local-first team of AI agents.',
+    description: 'Supervisory AI agent orchestration, verification harness, and local-first team control plane.',
     type: 'website',
   },
   icons: {
@@ -25,8 +33,12 @@ export const metadata: Metadata = {
 
 export default function Layout({ children }: LayoutProps<'/'>) {
   return (
-    <html lang="en" className={inter.className} suppressHydrationWarning>
-      <body className="flex min-h-screen flex-col">
+    <html
+      lang="en"
+      className={`${plusJakarta.className} ${plusJakarta.variable} ${jetbrainsMono.variable}`}
+      suppressHydrationWarning
+    >
+      <body className="flex min-h-screen flex-col antialiased">
         <Provider>{children}</Provider>
       </body>
     </html>
